@@ -1,4 +1,5 @@
 import SwiftUI
+import ServiceManagement
 
 @main
 struct MouseMapApp: App {
@@ -8,6 +9,7 @@ struct MouseMapApp: App {
     @StateObject private var viewModelWrapper: ViewModelWrapper
 
     @State private var isEnabled = true
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     init() {
         let trusted = AXIsProcessTrusted()
@@ -39,6 +41,19 @@ struct MouseMapApp: App {
             Toggle("启用", isOn: $isEnabled)
                 .onChange(of: isEnabled) { _, newValue in
                     configManager.setEnabled(newValue)
+                }
+
+            Toggle("开机自启", isOn: $launchAtLogin)
+                .onChange(of: launchAtLogin) { _, newValue in
+                    do {
+                        if newValue {
+                            try SMAppService.mainApp.register()
+                        } else {
+                            try SMAppService.mainApp.unregister()
+                        }
+                    } catch {
+                        launchAtLogin = !newValue
+                    }
                 }
 
             Divider()
