@@ -19,12 +19,24 @@ struct MouseMapApp: App {
         let cm = ConfigManager()
         let pm = PermissionManager()
         let etm = EventTapManager(configManager: cm)
+        let hid = HIDMonitor(configManager: cm)
+        let vm = SettingsViewModel(configManager: cm, eventTapManager: etm, hidMonitor: hid)
 
         _configManager = StateObject(wrappedValue: cm)
         _permissionManager = StateObject(wrappedValue: pm)
-        _eventTapManagerWrapper = StateObject(wrappedValue: EventTapManagerWrapper(eventTapManager: etm))
-        _viewModelWrapper = StateObject(wrappedValue: ViewModelWrapper(vm: SettingsViewModel(configManager: cm, eventTapManager: etm)))
+        _eventTapManagerWrapper = StateObject(wrappedValue: EventTapManagerWrapper(eventTapManager: etm, hidMonitor: hid))
+        _viewModelWrapper = StateObject(wrappedValue: ViewModelWrapper(vm: vm))
         _isEnabled = State(wrappedValue: cm.config.isEnabled)
+
+        if !trusted {
+            DispatchQueue.main.async {
+                SettingsWindowManager.shared.show(
+                    viewModel: vm,
+                    permissionManager: pm
+                )
+                pm.requestPermission()
+            }
+        }
     }
 
     var body: some Scene {
@@ -112,20 +124,29 @@ class WindowDelegate: NSObject, NSWindowDelegate {
 
 class EventTapManagerWrapper: ObservableObject {
     let eventTapManager: EventTapManager
+    let hidMonitor: HIDMonitor
     private var timer: Timer?
 
-    init(eventTapManager: EventTapManager) {
+    init(eventTapManager: EventTapManager, hidMonitor: HIDMonitor) {
         self.eventTapManager = eventTapManager
+        self.hidMonitor = hidMonitor
+        self.hidMonitor.onHandlingButtonsChanged = { [weak eventTapManager] isHandlingButtons in
+            eventTapManager?.hidMonitorActive = isHandlingButtons
+        }
         startPolling()
     }
 
     private func startPolling() {
         if AXIsProcessTrusted() {
+            hidMonitor.start()
+            eventTapManager.hidMonitorActive = hidMonitor.isHandlingButtons
             eventTapManager.start()
             return
         }
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] t in
             if AXIsProcessTrusted() {
+                self?.hidMonitor.start()
+                self?.eventTapManager.hidMonitorActive = self?.hidMonitor.isHandlingButtons ?? false
                 self?.eventTapManager.start()
                 t.invalidate()
                 self?.timer = nil

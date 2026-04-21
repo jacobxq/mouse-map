@@ -26,6 +26,7 @@ $(APP_BUNDLE): $(SOURCES)
 		-framework SwiftUI \
 		-framework ApplicationServices \
 		-framework Cocoa \
+		-framework IOKit \
 		$(SOURCES)
 	find $(APP_BUNDLE) -name "._*" -delete
 	codesign --force --sign - --identifier $(BUNDLE_ID) $(APP_BUNDLE)
