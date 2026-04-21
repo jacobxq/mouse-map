@@ -28,7 +28,7 @@ enum MappingAction: String, Codable, CaseIterable, Identifiable {
         case .desktopRight:   return 124  // Right Arrow
         case .missionControl: return 126  // Up Arrow
         case .appExpose:      return 125  // Down Arrow
-        case .showDesktop:    return 11   // F11
+        case .showDesktop:    return 103  // F11
         default: return nil
         }
     }
@@ -36,7 +36,7 @@ enum MappingAction: String, Codable, CaseIterable, Identifiable {
     var modifierFlags: CGEventFlags? {
         switch self {
         case .desktopLeft, .desktopRight, .missionControl, .appExpose:
-            return .maskAlternate
+            return .maskControl
         case .showDesktop:
             return []
         default: return nil

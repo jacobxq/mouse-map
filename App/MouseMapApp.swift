@@ -1,5 +1,6 @@
 import SwiftUI
 import ServiceManagement
+import Combine
 
 @main
 struct MouseMapApp: App {
@@ -24,7 +25,11 @@ struct MouseMapApp: App {
 
         _configManager = StateObject(wrappedValue: cm)
         _permissionManager = StateObject(wrappedValue: pm)
-        _eventTapManagerWrapper = StateObject(wrappedValue: EventTapManagerWrapper(eventTapManager: etm, hidMonitor: hid))
+        _eventTapManagerWrapper = StateObject(wrappedValue: EventTapManagerWrapper(
+            permissionManager: pm,
+            eventTapManager: etm,
+            hidMonitor: hid
+        ))
         _viewModelWrapper = StateObject(wrappedValue: ViewModelWrapper(vm: vm))
         _isEnabled = State(wrappedValue: cm.config.isEnabled)
 
@@ -123,35 +128,42 @@ class WindowDelegate: NSObject, NSWindowDelegate {
 }
 
 class EventTapManagerWrapper: ObservableObject {
+    private let permissionManager: PermissionManager
     let eventTapManager: EventTapManager
     let hidMonitor: HIDMonitor
-    private var timer: Timer?
+    private var cancellable: AnyCancellable?
 
-    init(eventTapManager: EventTapManager, hidMonitor: HIDMonitor) {
+    init(permissionManager: PermissionManager, eventTapManager: EventTapManager, hidMonitor: HIDMonitor) {
+        self.permissionManager = permissionManager
         self.eventTapManager = eventTapManager
         self.hidMonitor = hidMonitor
         self.hidMonitor.onHandlingButtonsChanged = { [weak eventTapManager] isHandlingButtons in
             eventTapManager?.hidMonitorActive = isHandlingButtons
         }
-        startPolling()
+        observePermission()
     }
 
-    private func startPolling() {
-        if AXIsProcessTrusted() {
+    private func observePermission() {
+        reconcilePermission(isGranted: permissionManager.isGranted)
+        cancellable = permissionManager.$isGranted
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isGranted in
+                self?.reconcilePermission(isGranted: isGranted)
+            }
+    }
+
+    private func reconcilePermission(isGranted: Bool) {
+        if isGranted {
             hidMonitor.start()
             eventTapManager.hidMonitorActive = hidMonitor.isHandlingButtons
             eventTapManager.start()
             return
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] t in
-            if AXIsProcessTrusted() {
-                self?.hidMonitor.start()
-                self?.eventTapManager.hidMonitorActive = self?.hidMonitor.isHandlingButtons ?? false
-                self?.eventTapManager.start()
-                t.invalidate()
-                self?.timer = nil
-            }
-        }
+
+        hidMonitor.stop()
+        eventTapManager.hidMonitorActive = false
+        eventTapManager.stop()
     }
 }
 

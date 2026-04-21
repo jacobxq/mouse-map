@@ -7,34 +7,42 @@ class HIDMonitor {
     private final class ButtonElementState {
         let usage: Int
         let buttonNumber: Int
-        let element: IOHIDElement
+        let reportID: UInt32
+        let bitIndex: Int
 
-        init(usage: Int, element: IOHIDElement) {
+        init(usage: Int, reportID: UInt32) {
             self.usage = usage
             self.buttonNumber = usage - 1
-            self.element = element
+            self.reportID = reportID
+            self.bitIndex = usage - 1
         }
     }
 
     private final class DeviceState {
         let registryID: UInt64
         let name: String
-        let device: IOHIDDevice
         let buttonElements: [ButtonElementState]
         var buttonStates: [Int: Bool]
+        let buttonByteCount: Int
+        var reportPrefix: [UInt8]
+        let buttonReportID: UInt32
 
         init(
             registryID: UInt64,
             name: String,
-            device: IOHIDDevice,
             buttonElements: [ButtonElementState],
-            buttonStates: [Int: Bool]
+            buttonStates: [Int: Bool],
+            buttonByteCount: Int,
+            reportPrefix: [UInt8],
+            buttonReportID: UInt32
         ) {
             self.registryID = registryID
             self.name = name
-            self.device = device
             self.buttonElements = buttonElements
             self.buttonStates = buttonStates
+            self.buttonByteCount = buttonByteCount
+            self.reportPrefix = reportPrefix
+            self.buttonReportID = buttonReportID
         }
     }
 
@@ -132,11 +140,18 @@ class HIDMonitor {
         }
 
         guard let deviceState = deviceStates[registryID] else { return }
+        guard reportID == deviceState.buttonReportID else { return }
+        guard reportLength >= deviceState.buttonByteCount else { return }
+
+        let prefix = Array(UnsafeBufferPointer(start: report, count: deviceState.buttonByteCount))
+        guard prefix != deviceState.reportPrefix else { return }
+
+        deviceState.reportPrefix = prefix
 
         let timestamp = DispatchTime.now().uptimeNanoseconds
 
         for button in deviceState.buttonElements {
-            let isPressed = currentButtonState(for: button.element, on: device)
+            let isPressed = isPressed(button: button, in: prefix)
             let wasPressed = deviceState.buttonStates[button.buttonNumber] ?? false
             deviceState.buttonStates[button.buttonNumber] = isPressed
 
@@ -159,15 +174,20 @@ class HIDMonitor {
 
         let name = stringProperty("Product", on: device) ?? "unknown"
         let buttonStates = Dictionary(uniqueKeysWithValues: buttonElements.map { button in
-            (button.buttonNumber, currentButtonState(for: button.element, on: device))
+            (button.buttonNumber, currentButtonState(usage: button.usage, on: device))
         })
+        let buttonByteCount = ((buttonElements.map(\.usage).max() ?? 0) + 7) / 8
+        let reportPrefix = reportPrefix(from: buttonStates, byteCount: buttonByteCount)
+        let buttonReportID = buttonElements.first?.reportID ?? 0
 
         deviceStates[registryID] = DeviceState(
             registryID: registryID,
             name: name,
-            device: device,
             buttonElements: buttonElements,
-            buttonStates: buttonStates
+            buttonStates: buttonStates,
+            buttonByteCount: buttonByteCount,
+            reportPrefix: reportPrefix,
+            buttonReportID: buttonReportID
         )
         updateHandlingButtons(true)
 
@@ -231,8 +251,12 @@ class HIDMonitor {
 
             guard usagePage == 0x09 else { continue }
             guard usage >= 3 else { continue }
+            guard IOHIDElementGetReportID(element) == 0 else { continue }
 
-            buttons.append(ButtonElementState(usage: usage, element: element))
+            buttons.append(ButtonElementState(
+                usage: usage,
+                reportID: IOHIDElementGetReportID(element)
+            ))
         }
 
         return buttons.sorted { lhs, rhs in
@@ -240,7 +264,19 @@ class HIDMonitor {
         }
     }
 
-    private func currentButtonState(for element: IOHIDElement, on device: IOHIDDevice) -> Bool {
+    private func currentButtonState(usage: Int, on device: IOHIDDevice) -> Bool {
+        let matching: [String: Any] = [
+            kIOHIDElementUsagePageKey: 0x09,
+            kIOHIDElementUsageKey: usage
+        ]
+        guard
+            let elements = IOHIDDeviceCopyMatchingElements(device, matching as CFDictionary, 0) as NSArray?,
+            elements.count > 0
+        else {
+            return false
+        }
+        let element = elements.object(at: 0) as! IOHIDElement
+
         var value: Unmanaged<IOHIDValue>?
         let result = withUnsafeMutablePointer(to: &value) { pointer in
             pointer.withMemoryRebound(to: Unmanaged<IOHIDValue>.self, capacity: 1) { rebound in
@@ -252,6 +288,30 @@ class HIDMonitor {
         }
 
         return IOHIDValueGetIntegerValue(value.takeUnretainedValue()) != 0
+    }
+
+    private func isPressed(button: ButtonElementState, in reportPrefix: [UInt8]) -> Bool {
+        let byteIndex = button.bitIndex / 8
+        guard reportPrefix.indices.contains(byteIndex) else { return false }
+
+        let bitMask = UInt8(1 << (button.bitIndex % 8))
+        return (reportPrefix[byteIndex] & bitMask) != 0
+    }
+
+    private func reportPrefix(from buttonStates: [Int: Bool], byteCount: Int) -> [UInt8] {
+        guard byteCount > 0 else { return [] }
+
+        var prefix = Array(repeating: UInt8(0), count: byteCount)
+
+        for (buttonNumber, isPressed) in buttonStates where isPressed {
+            let bitIndex = buttonNumber
+            let byteIndex = bitIndex / 8
+            guard prefix.indices.contains(byteIndex) else { continue }
+
+            prefix[byteIndex] |= UInt8(1 << (bitIndex % 8))
+        }
+
+        return prefix
     }
 
     private func registryID(for device: IOHIDDevice) -> UInt64? {
